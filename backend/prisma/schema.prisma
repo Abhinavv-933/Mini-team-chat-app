@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  username      String    @unique
+  password      String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  messages      Message[]
+  channelMembers ChannelMember[]
+  presences     Presence[]
+}
+
+model Channel {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  messages    Message[]
+  members     ChannelMember[]
+}
+
+model ChannelMember {
+  id        String   @id @default(uuid())
+  userId    String
+  channelId String
+  joinedAt  DateTime @default(now())
+  
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, channelId])
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  content   String
+  userId    String
+  channelId String
+  createdAt DateTime @default(now())
+  
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  
+  @@index([channelId, createdAt])
+}
+
+model Presence {
+  id        String   @id @default(uuid())
+  userId    String
+  socketId  String   @unique
+  online    Boolean  @default(true)
+  lastSeen  DateTime @default(now())
+  
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId, online])
+}
