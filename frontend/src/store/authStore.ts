@@ -51,8 +51,8 @@ export const useAuthStore = create<AuthState>()(
                         return;
                     }
 
-                    const data = await res.json();
-                    set({ user: data.user, loading: false });
+                    const user = await res.json();
+                    set({ user, loading: false });
                 } catch (err) {
                     console.error("restoreUser error:", err);
                     set({ user: null, token: null, loading: false });
