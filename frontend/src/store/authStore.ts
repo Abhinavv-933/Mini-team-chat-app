@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
+import { API_URL } from "@/lib/api";
 
 interface User {
     id: string;
@@ -41,7 +42,7 @@ export const useAuthStore = create<AuthState>()(
                 }
 
                 try {
-                    const res = await fetch("/api/auth/me", {
+                    const res = await fetch(`${API_URL}/api/auth/me`, {
                         headers: { Authorization: `Bearer ${token}` }
                     });
 
