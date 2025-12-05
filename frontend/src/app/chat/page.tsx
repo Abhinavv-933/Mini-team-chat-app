@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/store/authStore';
 import { useSocket } from '@/hooks/useSocket';
 import { api } from '@/lib/api';
+
 import ChannelList from '@/components/ChannelList';
 import MessageList from '@/components/MessageList';
 import MessageInput from '@/components/MessageInput';
@@ -30,76 +31,77 @@ interface Message {
 
 export default function ChatPage() {
     const router = useRouter();
-    const { user, token, logout } = useAuthStore();
-    const socket = useSocket();
+    const { user, token, logout, restoreUser, loading: authLoading } = useAuthStore();
 
     const [channels, setChannels] = useState<Channel[]>([]);
     const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
     const [messages, setMessages] = useState<Message[]>([]);
     const [onlineUsers, setOnlineUsers] = useState<Record<string, boolean>>({});
+    const [typingUsers, setTypingUsers] = useState<Record<string, boolean>>({});
     const [loading, setLoading] = useState(true);
 
+    // ----------------------------------------------------------------
+    // Restore session ONCE at app load
+    // ----------------------------------------------------------------
     useEffect(() => {
+        restoreUser();
+    }, []);
+
+    // ----------------------------------------------------------------
+    // SOCKET: ALL REAL-TIME EVENTS
+    // ----------------------------------------------------------------
+    const socket = useSocket({
+        onNewMessage: (message) => {
+            if (message.channelId !== activeChannel?.id) return;
+
+            setMessages(prev => {
+                if (prev.some(m => m.id === message.id)) return prev;
+                return [...prev, message];
+            });
+        },
+
+        onChannelHistory: ({ channelId, messages }) => {
+            if (channelId === activeChannel?.id) {
+                setMessages(messages);
+            }
+        },
+
+        onPresenceUpdate: ({ userId, online }) => {
+            setOnlineUsers(prev => ({
+                ...prev,
+                [userId]: online
+            }));
+        },
+
+        onUserTyping: ({ userId, isTyping, channelId }) => {
+            if (channelId !== activeChannel?.id) return;
+
+            setTypingUsers(prev => ({
+                ...prev,
+                [userId]: isTyping
+            }));
+        }
+    });
+
+    // ----------------------------------------------------------------
+    // LOAD CHANNELS AFTER AUTH RESTORED
+    // ----------------------------------------------------------------
+    useEffect(() => {
+        if (authLoading) return; // wait until restoreUser() completes
+
         if (!token) {
             router.push('/auth/login');
             return;
         }
 
         loadChannels();
-    }, [token, router]);
-
-    useEffect(() => {
-        if (!socket || !token) return;
-
-        // Fetch initial online users when socket connects
-        const fetchOnlineUsers = async () => {
-            try {
-                const data = await api.fetchWithAuth('/api/presence/online', token);
-                const onlineUsersMap: Record<string, boolean> = {};
-                data.onlineUsers.forEach((userId: string) => {
-                    onlineUsersMap[userId] = true;
-                });
-                setOnlineUsers(onlineUsersMap);
-            } catch (error) {
-                console.error('Failed to fetch online users:', error);
-            }
-        };
-
-        fetchOnlineUsers();
-
-        // Listen for new messages - don't filter by activeChannel here
-        socket.on('new_message', (message: Message) => {
-            console.log('Received message:', message);
-            // Only add message if it's for the currently active channel
-            setMessages((prev) => {
-                // Check if this message is for the current channel
-                const currentChannelId = activeChannel?.id;
-                if (message.channelId === currentChannelId) {
-                    // Check if message already exists (avoid duplicates)
-                    if (prev.some(m => m.id === message.id)) {
-                        return prev;
-                    }
-                    return [...prev, message];
-                }
-                return prev;
-            });
-        });
-
-        socket.on('presence_update', ({ userId, online }: { userId: string; online: boolean }) => {
-            console.log('Presence update:', userId, online);
-            setOnlineUsers((prev) => ({ ...prev, [userId]: online }));
-        });
-
-        return () => {
-            socket.off('new_message');
-            socket.off('presence_update');
-        };
-    }, [socket, token, activeChannel]);
+    }, [authLoading, token]);
 
     const loadChannels = async () => {
         try {
             const data = await api.fetchWithAuth('/api/channels', token!);
             setChannels(data);
+
             if (data.length > 0 && !activeChannel) {
                 selectChannel(data[0]);
             }
@@ -110,37 +112,42 @@ export default function ChatPage() {
         }
     };
 
-    const selectChannel = async (channel: Channel) => {
+    // ----------------------------------------------------------------
+    // SELECT CHANNEL
+    // ----------------------------------------------------------------
+    const selectChannel = (channel: Channel) => {
         setActiveChannel(channel);
         setMessages([]);
-
-        if (socket) {
-            socket.emit('join_channel', channel.id);
-        }
-
-        try {
-            const data = await api.fetchWithAuth(`/api/messages/${channel.id}?limit=50`, token!);
-            setMessages(data.reverse());
-        } catch (error) {
-            console.error('Failed to load messages:', error);
-        }
+        setTypingUsers({}); // reset typing
+        socket?.emit("join_channel", channel.id);
     };
 
+    // ----------------------------------------------------------------
+    // SEND MESSAGE
+    // ----------------------------------------------------------------
     const handleSendMessage = (content: string) => {
         if (!socket || !activeChannel) return;
 
-        socket.emit('send_message', {
+        socket.emit("send_message", {
             channelId: activeChannel.id,
-            content,
+            content
         });
     };
 
+    // ----------------------------------------------------------------
+    // LOGOUT
+    // ----------------------------------------------------------------
     const handleLogout = () => {
         logout();
         router.push('/auth/login');
     };
 
-    if (loading) {
+    // ----------------------------------------------------------------
+    // SHOW LOADING UNTIL:
+    // - authStore restored session
+    // - channels loaded
+    // ----------------------------------------------------------------
+    if (authLoading || loading) {
         return (
             <div className="min-h-screen flex items-center justify-center bg-gray-100">
                 <div className="text-xl text-gray-600">Loading...</div>
@@ -148,6 +155,9 @@ export default function ChatPage() {
         );
     }
 
+    // ----------------------------------------------------------------
+    // RENDER UI
+    // ----------------------------------------------------------------
     return (
         <div className="h-screen flex flex-col bg-gray-100">
             {/* Header */}
@@ -164,9 +174,8 @@ export default function ChatPage() {
                 </div>
             </header>
 
-            {/* Main Content */}
             <div className="flex-1 flex overflow-hidden">
-                {/* Channel Sidebar */}
+                {/* CHANNELS SIDEBAR */}
                 <ChannelList
                     channels={channels}
                     activeChannel={activeChannel}
@@ -174,18 +183,40 @@ export default function ChatPage() {
                     onChannelCreated={loadChannels}
                 />
 
-                {/* Messages Area */}
+                {/* MAIN CHAT AREA */}
                 <div className="flex-1 flex flex-col bg-white">
                     {activeChannel ? (
                         <>
+                            {/* Channel header */}
                             <div className="border-b border-gray-200 px-6 py-4">
-                                <h2 className="text-xl font-semibold text-gray-800">#{activeChannel.name}</h2>
+                                <h2 className="text-xl font-semibold text-gray-800">
+                                    #{activeChannel.name}
+                                </h2>
                                 {activeChannel.description && (
-                                    <p className="text-sm text-gray-500">{activeChannel.description}</p>
+                                    <p className="text-sm text-gray-500">
+                                        {activeChannel.description}
+                                    </p>
                                 )}
                             </div>
+
+                            {/* Messages */}
                             <MessageList messages={messages} />
-                            <MessageInput onSendMessage={handleSendMessage} />
+
+                            {/* Typing indicator */}
+                            <div className="px-6 py-1 h-5 text-sm text-gray-500">
+                                {Object.entries(typingUsers)
+                                    .filter(([id, isTyping]) => isTyping && id !== user?.id)
+                                    .map(([id]) => (
+                                        <div key={id}>{id} is typing…</div>
+                                    ))}
+                            </div>
+
+                            {/* Message Input */}
+                            <MessageInput
+                                onSendMessage={handleSendMessage}
+                                socket={socket}
+                                channelId={activeChannel.id}
+                            />
                         </>
                     ) : (
                         <div className="flex-1 flex items-center justify-center text-gray-500">
@@ -194,7 +225,7 @@ export default function ChatPage() {
                     )}
                 </div>
 
-                {/* Online Users Sidebar */}
+                {/* ONLINE USERS SIDEBAR */}
                 <OnlineUsers
                     channelId={activeChannel?.id}
                     onlineUsers={onlineUsers}
